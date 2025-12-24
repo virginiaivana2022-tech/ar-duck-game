@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AR Duck Shooter Final</title>
+  <!-- 引入 A-Frame -->
+  <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+  <!-- 確保手機不縮放 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  
+  <style>
+    body { margin: 0; overflow: hidden; background-color: black; font-family: sans-serif; }
+    
+    /* (1) 攝像頭背景層 (保證有畫面) */
+    #camera-feed {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      object-fit: cover; /* 充滿螢幕 */
+      z-index: 1; 
+      transform: scaleX(-1); /* 自拍鏡頭需要翻轉，後鏡頭通常不用，視情況調整 */
+    }
+
+    /* (2) 3D 場景層 (透明) */
+    a-scene {
+      z-index: 50;
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+    }
+
+    /* (3) UI 層 */
+    #ui-layer {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      z-index: 100;
+      pointer-events: none; /* 讓點擊穿透 */
+    }
+
+    /* 起始畫面 */
+    #start-screen {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background-image: url('start.png'); /* 你的背景圖 */
+      background-size: cover;
+      background-position: center;
+      background-color: #222; /* 預備色 */
+      display: flex;
+      justify-content: center;
+      align-items: flex-end;
+      pointer-events: auto;
+    }
+
+    #start-btn {
+      margin-bottom: 25%;
+      padding: 15px 50px;
+      font-size: 22px;
+      background-color: #ffcc00;
+      border: 3px solid white;
+      border-radius: 50px;
+      color: #333;
+      font-weight: bold;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+    }
+
+    /* 遊戲操作區 */
+    #game-area {
+      position: absolute;
+      bottom: 0; width: 100%; height: 40%;
+      pointer-events: auto;
+      display: none; /* 開始後才顯示 */
+      /* 輔助漸層讓你知道這裡是操作區 */
+      background: linear-gradient(to top, rgba(0,0,0,0.5), transparent);
+    }
+
+    .hint {
+      text-align: center; color: white; margin-top: 60%; 
+      text-shadow: 1px 1px 2px black; font-size: 18px;
+    }
+    
+    /* 除錯文字 */
+    #debug {
+      position: absolute; top: 10px; left: 10px; 
+      color: lime; background: rgba(0,0,0,0.5); padding: 5px;
+      z-index: 200; font-size: 12px; pointer-events: none;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- 攝像頭背景影片 -->
+  <video id="camera-feed" autoplay playsinline muted></video>
+
+  <!-- A-Frame 3D 場景 (設為透明) -->
+  <a-scene embedded transparent="true" vr-mode-ui="enabled: false">
+    <a-assets>
+      <img id="duck1" src="duck1.png">
+      <img id="duck2" src="duck2.png">
+      <img id="duck3" src="duck3.png">
+      <img id="duck4" src="duck4.png">
+      <!-- 軌跡圖 -->
+      <img id="trail1" src="duck1_e.png" onerror="this.src='duck1.png'">
+      <img id="trail2" src="duck2_e.png" onerror="this.src='duck2.png'">
+      <img id="trail3" src="duck3_e.png" onerror="this.src='duck3.png'">
+    </a-assets>
+
+    <!-- 攝影機 (與手機動作連動) -->
+    <a-entity id="main-camera" camera look-controls position="0 1.6 0"></a-entity>
+    
+    <!-- 鴨子容易 -->
+    <a-entity id="bullet-container"></a-entity>
+  </a-scene>
+
+  <!-- UI 介面 -->
+  <div id="ui-layer">
+    <div id="debug">等待開始...</div>
+    
+    <div id="start-screen">
+      <button id="start-btn">開始遊戲</button>
+    </div>
+
+    <div id="game-area">
+      <div class="hint">⬆ 向上滑動發射鴨子 ⬆</div>
+    </div>
+  </div>
+
+  <script>
+    // --- 變數設定 ---
+    const debugEl = document.getElementById('debug');
+    const startScreen = document.getElementById('start-screen');
+    const gameArea = document.getElementById('game-area');
+    const startBtn = document.getElementById('start-btn');
+    const videoEl = document.getElementById('camera-feed');
+    const scene = document.querySelector('a-scene');
+    const cameraEl = document.getElementById('main-camera');
+    const container = document.getElementById('bullet-container');
+
+    function log(msg) {
+      console.log(msg);
+      debugEl.innerText = msg;
+    }
+
+    // --- 1. 啟動攝像頭與遊戲 ---
+    startBtn.addEventListener('click', async () => {
+      startScreen.style.display = 'none';
+      gameArea.style.display = 'block';
+      
+      // A. 啟動後鏡頭 (環境鏡頭)
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: "environment" }, // 使用後鏡頭
+          audio: false 
+        });
+        videoEl.srcObject = stream;
+        log("攝像頭已啟動");
+      } catch (err) {
+        log("攝像頭錯誤: " + err);
+        // 如果失敗，背景會是黑的，但遊戲仍可玩
+      }
+
+      // B. 請求陀螺儀權限 (iOS 需要)
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+          .then(res => {
+            if (res === 'granted') log("陀螺儀權限已獲取");
+            else log("陀螺儀權限被拒絕");
+          })
+          .catch(e => log(e));
+      }
+    });
+
+    // --- 2. 滑動偵測 ---
+    let startY = 0;
+    gameArea.addEventListener('touchstart', e => {
+      startY = e.touches[0].clientY;
+    });
+
+    gameArea.addEventListener('touchend', e => {
+      let endY = e.changedTouches[0].clientY;
+      if (startY - endY > 50) { // 向上滑動超過 50px
+        shoot();
+      }
+    });
+
+    // --- 3. 發射鴨子 (核心修正) ---
+    function shoot() {
+      const type = Math.floor(Math.random() * 4) + 1; // 1~4
+      log(`發射鴨子 #${type}`);
+
+      // 建立鴨子物件
+      const el = document.createElement('a-entity');
+      
+      // 設定位置：從攝影機位置開始
+      // 我們使用 Three.js 的方法來確保它真的在攝影機前方
+      const camObj = cameraEl.object3D;
+      
+      // 1. 取得攝影機的世界座標
+      const origin = new THREE.Vector3();
+      camObj.getWorldPosition(origin);
+
+      // 2. 取得攝影機面對的方向
+      const direction = new THREE.Vector3(0, 0, -1);
+      direction.applyQuaternion(camObj.getWorldQuaternion(new THREE.Quaternion()));
+
+      // 3. 設定初始位置：在攝影機前方 0.5 米
+      const startPos = origin.clone().add(direction.clone().multiplyScalar(0.5));
+      // 稍微往下放一點點，模擬從手丟出去
+      startPos.y -= 0.2; 
+
+      el.setAttribute('position', startPos);
+      
+      // 設定外觀 (圖片)
+      // 使用 geometry primitive: plane 比較保險，確保一定顯示
+      el.setAttribute('geometry', 'primitive: plane; height: 1; width: 1');
+      el.setAttribute('material', `src: #duck${type}; shader: flat; transparent: true; side: double`);
+      
+      // 加上 billboarding (讓鴨子永遠面向你)
+      el.setAttribute('look-at-camera', '');
+
+      container.appendChild(el);
+
+      // --- 動畫邏輯 ---
+      let frames = 0;
+      const speed = 0.15;
+      const velocity = direction.multiplyScalar(speed);
+
+      // 設定每16ms移動一次 (約60FPS)
+      const interval = setInterval(() => {
+        frames++;
+        
+        // 移動位置
+        el.object3D.position.add(velocity);
+
+        // 特殊效果: 軌跡
+        if (frames % 5 === 0 && type !== 4) {
+          spawnTrail(el.object3D.position, type);
+        }
+
+        // 飛一秒後 (60幀) 停止移動，停在空中
+        if (frames > 60) {
+          clearInterval(interval);
+          
+          // 如果是鴨子4，在這裡畫線(簡化版)
+          if (type === 4) {
+             // 這裡可以加線條，簡單起見先不做複雜計算
+          }
+        }
+      }, 16);
+    }
+
+    // --- 4. 產生軌跡 ---
+    function spawnTrail(pos, type) {
+      const trail = document.createElement('a-entity');
+      trail.setAttribute('geometry', 'primitive: plane; height: 0.5; width: 0.5');
+      trail.setAttribute('material', `src: #trail${type}; shader: flat; transparent: true; opacity: 0.7; side: double`);
+      trail.setAttribute('position', pos);
+      trail.setAttribute('look-at-camera', '');
+      container.appendChild(trail);
+
+      // 淡出動畫
+      let opacity = 0.7;
+      const fade = setInterval(() => {
+        opacity -= 0.05;
+        if (opacity <= 0) {
+          clearInterval(fade);
+          if (trail.parentNode) trail.parentNode.removeChild(trail);
+        } else {
+          trail.setAttribute('material', 'opacity', opacity);
+        }
+      }, 50);
+    }
+
+    // --- 5. 自定義元件: 永遠面向鏡頭 ---
+    AFRAME.registerComponent('look-at-camera', {
+      tick: function () {
+        // 每一幀都讓物體轉向攝影機
+        this.el.object3D.lookAt(cameraEl.object3D.position);
+      }
+    });
+
+    // --- 6. 重要：如果圖片載入失敗的除錯機制 ---
+    document.querySelector('a-assets').addEventListener('error', (e) => {
+        log("圖片載入失敗: " + e.target.id);
+    }, true);
+
+  </script>
+</body>
+</html>
